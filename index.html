@@ -29,6 +29,7 @@
       width: 100%;
       border: 1px solid #444;
       border-radius: 4px;
+      background: #000;
     }
     #overlayCanvas {
       position: absolute;
@@ -201,9 +202,12 @@
 
   function stopCamera() {
     if (stream) {
+      // on coupe physiquement la caméra
       stream.getTracks().forEach(t => t.stop());
       stream = null;
     }
+    // on détache le flux vidéo
+    video.srcObject = null;
   }
 
   // === 6. Boucle d'analyse (équivalent de ta boucle while + SKIP_FRAMES) ===
@@ -298,13 +302,21 @@
   });
 
   stopBtn.addEventListener("click", () => {
+    // on arrête la boucle d'analyse
     if (intervalId) {
       clearInterval(intervalId);
       intervalId = null;
     }
+
+    // on coupe la caméra
+    stopCamera();
+
+    // on nettoie l'affichage
     ctx.clearRect(0, 0, overlay.width, overlay.height);
-    infoDiv.textContent = "Caméra en pause.";
+    infoDiv.textContent = "Caméra arrêtée.";
     statusDiv.textContent = "";
+
+    // on réactive le bouton Démarrer
     startBtn.disabled = false;
     stopBtn.disabled = true;
   });
