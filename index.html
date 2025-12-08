@@ -1,89 +1,319 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <title>Stair Detector Live</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: #f2f2f2;
-            padding: 20px;
-        }
-        h1 {
-            color: #2c3e50;
-        }
-        .box {
-            padding: 15px;
-            background: white;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-        }
-        img {
-            width: 250px;
-            border: 1px solid #ccc;
-            margin-top: 10px;
-        }
-        code {
-            background: #eee;
-            padding: 5px;
-            border-radius: 5px;
-            font-size: 15px;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <title>Stair Detector - Live</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #111;
+      color: #eee;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    h1 {
+      font-size: 20px;
+      text-align: center;
+      margin: 10px 0 5px 0;
+    }
+    #videoContainer {
+      position: relative;
+      width: 100%;
+      max-width: 480px;
+      margin-top: 5px;
+    }
+    #videoElement {
+      width: 100%;
+      border: 1px solid #444;
+      border-radius: 4px;
+    }
+    #overlayCanvas {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    #info {
+      margin-top: 8px;
+      font-size: 14px;
+      text-align: center;
+    }
+    #status {
+      margin-top: 4px;
+      font-size: 12px;
+      text-align: center;
+      color: #ccc;
+    }
+    #controls {
+      margin-top: 6px;
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+    button {
+      padding: 6px 10px;
+      font-size: 14px;
+      border-radius: 4px;
+      border: none;
+      background: #2b7cff;
+      color: white;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #555;
+      cursor: default;
+    }
+  </style>
 </head>
 <body>
 
-<h1>Détecteur de Marches – Version Mobile</h1>
+<h1>Stair Detector – Live</h1>
 
-<div class="box">
-    <h2>📌 Objectif</h2>
-    <p>
-        Cette page permet à n'importe qui (professeur, étudiant…) de télécharger
-        le programme Python pour tester la détection de marches sur téléphone ou PC.
-    </p>
+<div id="videoContainer">
+  <video id="videoElement" autoplay playsinline muted></video>
+  <canvas id="overlayCanvas"></canvas>
 </div>
 
-<div class="box">
-    <h2>📥 Télécharger le script Python</h2>
-    <p>
-        Cliquez ici pour télécharger la dernière version du programme :
-    </p>
-
-    <p>
-        🔗 <a href="https://raw.githubusercontent.com/Gildas2024/stair-detector-live/main/stair_detector.py" download>
-            Télécharger stair_detector.py
-        </a>
-    </p>
+<div id="controls">
+  <button id="startBtn">Démarrer</button>
+  <button id="stopBtn" disabled>Arrêter</button>
 </div>
 
-<div class="box">
-    <h2>📱 Tester rapidement via QR Code</h2>
-    <p>Scanne ce QR code pour télécharger le script sur ton téléphone :</p>
+<div id="info">En attente de la caméra…</div>
+<div id="status"></div>
 
-    <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=https://raw.githubusercontent.com/Gildas2024/stair-detector-live/main/stair_detector.py" alt="QR Code">
-</div>
+<script>
+  // === Paramètres Roboflow / projet ===
+  const API_KEY = "Hl9oVZ2Lmd7lwCSsjCU5";
+  const API_URL = "https://serverless.roboflow.com/gildas-lkqed/workflows/custom-workflow-2";
+  const FRAME_INTERVAL_MS = 300; // 1 frame toutes les 300 ms
+  const MIN_CONF = 0.4;
 
-<div class="box">
-    <h2>⚙️ Instructions smartphone (Android)</h2>
-    <ol>
-        <li>Scanner le QR code ci-dessus</li>
-        <li>Le fichier <b>stair_detector.py</b> se télécharge</li>
-        <li>L’ouvrir dans un éditeur Python mobile (Pydroid3 recommandé)</li>
-        <li>Installer :
-            <br><code>pip install requests numpy</code>
-        </li>
-        <li>Lancer le script → la caméra s’ouvre → la détection marche en temps réel</li>
-    </ol>
-</div>
+  const video = document.getElementById("videoElement");
+  const overlay = document.getElementById("overlayCanvas");
+  const ctx = overlay.getContext("2d");
+  const infoDiv = document.getElementById("info");
+  const statusDiv = document.getElementById("status");
+  const startBtn = document.getElementById("startBtn");
+  const stopBtn = document.getElementById("stopBtn");
 
-<div class="box">
-    <h2>🤖 API utilisée</h2>
-    <p>
-        Workflow Roboflow : <b>custom-workflow-2</b><br>
-        API Key : <code>Hl9oVZ2Lmd7lwCSsjCU5</code>
-    </p>
-</div>
+  let stream = null;
+  let intervalId = null;
+  let isBusy = false;
+
+  // === 1. Appel API Roboflow (équivalent de call_workflow_with_frame) ===
+  async function callWorkflowWithBase64(imageBase64) {
+    const payload = {
+      api_key: API_KEY,
+      inputs: {
+        image: {
+          type: "base64",
+          value: imageBase64
+        }
+      }
+    };
+
+    const resp = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error("Erreur API: " + resp.status + " " + text);
+    }
+    return await resp.json();
+  }
+
+  // === 2. find_predictions en version JS ===
+  function findPredictions(obj) {
+    if (!obj) return null;
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        const res = findPredictions(item);
+        if (res) return res;
+      }
+    } else if (typeof obj === "object") {
+      if (Array.isArray(obj.predictions)) {
+        return obj.predictions;
+      }
+      for (const key in obj) {
+        const res = findPredictions(obj[key]);
+        if (res) return res;
+      }
+    }
+    return null;
+  }
+
+  // === 3. Catégorie de distance (loin / moyen / proche) ===
+  function distanceCategory(boxHeight, imageHeight) {
+    const ratio = boxHeight / imageHeight;
+    if (ratio < 0.10) return "loin";
+    else if (ratio < 0.25) return "moyen";
+    else return "proche";
+  }
+
+  // === 4. Filtre anti-passage piéton (traduction de ton filter_stairs Python) ===
+  function filterStairs(rawPreds, imgW, imgH, minConf = 0.4) {
+    const kept = [];
+    for (const p of rawPreds) {
+      const conf = p.confidence || 0.0;
+      if (conf < minConf) continue;
+
+      const w = p.width;
+      const h = p.height;
+      const y = p.y;
+
+      const wNorm = w / imgW;
+      const hNorm = h / imgH;
+      const yNorm = y / imgH;
+      const ratio = (hNorm <= 1e-6) ? 999.0 : wNorm / hNorm;
+
+      // grande bande horizontale en bas de l'image = passage piéton / bord de route
+      const isBand = (wNorm > 0.45 && ratio > 4.0 && yNorm > 0.55);
+      if (!isBand) kept.push(p);
+    }
+    return kept;
+  }
+
+  // === 5. Gestion de la caméra ===
+  async function startCamera() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false
+      });
+      video.srcObject = stream;
+      infoDiv.textContent = "Caméra en direct. Clique sur 'Démarrer' pour analyser.";
+      statusDiv.textContent = "";
+    } catch (err) {
+      console.error(err);
+      infoDiv.textContent = "Impossible d'accéder à la caméra.";
+      statusDiv.textContent = err.message;
+    }
+  }
+
+  function stopCamera() {
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+  }
+
+  // === 6. Boucle d'analyse (équivalent de ta boucle while + SKIP_FRAMES) ===
+  async function processFrameLoop() {
+    if (!video.videoWidth || !video.videoHeight) return;
+    if (isBusy) return;
+    isBusy = true;
+
+    try {
+      overlay.width = video.videoWidth;
+      overlay.height = video.videoHeight;
+
+      const tmpCanvas = document.createElement("canvas");
+      tmpCanvas.width = video.videoWidth;
+      tmpCanvas.height = video.videoHeight;
+      const tmpCtx = tmpCanvas.getContext("2d");
+      tmpCtx.drawImage(video, 0, 0, tmpCanvas.width, tmpCanvas.height);
+
+      const dataURL = tmpCanvas.toDataURL("image/jpeg", 0.8);
+      const base64Data = dataURL.split(",")[1];
+
+      const json = await callWorkflowWithBase64(base64Data);
+      const preds = findPredictions(json) || [];
+
+      const imgW = tmpCanvas.width;
+      const imgH = tmpCanvas.height;
+      const filtered = filterStairs(preds, imgW, imgH, MIN_CONF);
+
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      ctx.lineWidth = 2;
+      ctx.font = "14px Arial";
+
+      let countTotal = 0;
+      let countLoin = 0;
+      let countMoyen = 0;
+      let countProche = 0;
+
+      for (const p of filtered) {
+        const conf = p.confidence || 0.0;
+        const x = p.x;
+        const y = p.y;
+        const w = p.width;
+        const h = p.height;
+        const cls = p.class || "stair";
+
+        const x1 = Math.round(x - w / 2);
+        const y1 = Math.round(y - h / 2);
+        const x2 = Math.round(x + w / 2);
+        const y2 = Math.round(y + h / 2);
+
+        const cat = distanceCategory(h, imgH);
+
+        countTotal++;
+        if (cat === "loin") countLoin++;
+        else if (cat === "moyen") countMoyen++;
+        else countProche++;
+
+        ctx.strokeStyle = "lime";
+        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+        const label = `${cls} ${conf.toFixed(2)} ${cat}`;
+        ctx.fillStyle = "lime";
+        ctx.fillText(label, x1 + 2, Math.max(y1 - 4, 12));
+      }
+
+      const info = `Marches: ${countTotal} (loin:${countLoin} moy:${countMoyen} proche:${countProche})`;
+      infoDiv.textContent = info;
+      statusDiv.textContent = `Dernière mise à jour: ${new Date().toLocaleTimeString()}`;
+    } catch (err) {
+      console.error(err);
+      statusDiv.textContent = "Erreur: " + err.message;
+    } finally {
+      isBusy = false;
+    }
+  }
+
+  // === 7. Boutons Démarrer / Arrêter ===
+  startBtn.addEventListener("click", () => {
+    if (!stream) {
+      startCamera().then(() => {
+        intervalId = setInterval(processFrameLoop, FRAME_INTERVAL_MS);
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        infoDiv.textContent = "Analyse en cours…";
+      });
+    } else {
+      intervalId = setInterval(processFrameLoop, FRAME_INTERVAL_MS);
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      infoDiv.textContent = "Analyse en cours…";
+    }
+  });
+
+  stopBtn.addEventListener("click", () => {
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    infoDiv.textContent = "Caméra en pause.";
+    statusDiv.textContent = "";
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+  });
+
+  // on prépare la caméra au chargement de la page
+  window.addEventListener("load", () => {
+    startCamera();
+  });
+</script>
 
 </body>
 </html>
