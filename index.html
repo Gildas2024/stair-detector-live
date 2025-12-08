@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Stair Detector Live</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f2f2f2;
+            padding: 20px;
+        }
+        h1 {
+            color: #2c3e50;
+        }
+        .box {
+            padding: 15px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        img {
+            width: 250px;
+            border: 1px solid #ccc;
+            margin-top: 10px;
+        }
+        code {
+            background: #eee;
+            padding: 5px;
+            border-radius: 5px;
+            font-size: 15px;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Détecteur de Marches – Version Mobile</h1>
+
+<div class="box">
+    <h2>📌 Objectif</h2>
+    <p>
+        Cette page permet à n'importe qui (professeur, étudiant…) de télécharger
+        le programme Python pour tester la détection de marches sur téléphone ou PC.
+    </p>
+</div>
+
+<div class="box">
+    <h2>📥 Télécharger le script Python</h2>
+    <p>
+        Cliquez ici pour télécharger la dernière version du programme :
+    </p>
+
+    <p>
+        🔗 <a href="https://raw.githubusercontent.com/Gildas2024/stair-detector-live/main/stair_detector.py" download>
+            Télécharger stair_detector.py
+        </a>
+    </p>
+</div>
+
+<div class="box">
+    <h2>📱 Tester rapidement via QR Code</h2>
+    <p>Scanne ce QR code pour télécharger le script sur ton téléphone :</p>
+
+    <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=https://raw.githubusercontent.com/Gildas2024/stair-detector-live/main/stair_detector.py" alt="QR Code">
+</div>
+
+<div class="box">
+    <h2>⚙️ Instructions smartphone (Android)</h2>
+    <ol>
+        <li>Scanner le QR code ci-dessus</li>
+        <li>Le fichier <b>stair_detector.py</b> se télécharge</li>
+        <li>L’ouvrir dans un éditeur Python mobile (Pydroid3 recommandé)</li>
+        <li>Installer :
+            <br><code>pip install requests numpy</code>
+        </li>
+        <li>Lancer le script → la caméra s’ouvre → la détection marche en temps réel</li>
+    </ol>
+</div>
+
+<div class="box">
+    <h2>🤖 API utilisée</h2>
+    <p>
+        Workflow Roboflow : <b>custom-workflow-2</b><br>
+        API Key : <code>Hl9oVZ2Lmd7lwCSsjCU5</code>
+    </p>
+</div>
+
+</body>
+</html>
