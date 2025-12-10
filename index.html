@@ -107,6 +107,11 @@
   let intervalId = null;
   let isBusy = false;
 
+  // --- Anti-clignotement : on garde les dernières détections quelques frames ---
+  let previousDetections = [];
+  let persistenceFrames = 4;   // nombre de frames où on garde les anciennes détections
+  let persistenceCounter = 0;
+
   // === 1. Appel API Roboflow (équivalent de call_workflow_with_frame) ===
   async function callWorkflowWithBase64(imageBase64) {
     const payload = {
@@ -160,27 +165,65 @@
     else return "proche";
   }
 
-  // === 4. Filtre anti-passage piéton (traduction de ton filter_stairs Python) ===
+  // === 4. Filtre anti-passage piéton amélioré ===
   function filterStairs(rawPreds, imgW, imgH, minConf = 0.4) {
-    const kept = [];
-    for (const p of rawPreds) {
-      const conf = p.confidence || 0.0;
-      if (conf < minConf) continue;
+    // 1) On garde seulement les détections au-dessus du seuil
+    const raw = rawPreds.filter(p => (p.confidence || 0) >= minConf);
+    if (raw.length === 0) return [];
 
-      const w = p.width;
-      const h = p.height;
-      const y = p.y;
+    // 2) On calcule des stats globales
+    const ys = raw.map(p => p.y / imgH);
+    const hs = raw.map(p => p.height / imgH);
+    const ws = raw.map(p => p.width / imgW);
 
-      const wNorm = w / imgW;
-      const hNorm = h / imgH;
-      const yNorm = y / imgH;
-      const ratio = (hNorm <= 1e-6) ? 999.0 : wNorm / hNorm;
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const verticalSpan = maxY - minY;
 
-      // grande bande horizontale en bas de l'image = passage piéton / bord de route
-      const isBand = (wNorm > 0.45 && ratio > 4.0 && yNorm > 0.55);
-      if (!isBand) kept.push(p);
+    const avgH = hs.reduce((a, b) => a + b, 0) / hs.length;
+    const avgW = ws.reduce((a, b) => a + b, 0) / ws.length;
+
+    // Largeur/hauteur moyenne (plus c'est grand, plus c'est une bande plate)
+    const ratios = [];
+    for (let i = 0; i < raw.length; i++) {
+      if (hs[i] > 1e-6) {
+        ratios.push(ws[i] / hs[i]);
+      }
     }
-    return kept;
+    const avgRatio = ratios.length
+      ? ratios.reduce((a, b) => a + b, 0) / ratios.length
+      : 0;
+
+    const fracLow = ys.filter(y => y > 0.6).length / ys.length;
+
+    // 3) Motif "passage piéton" global :
+    // - plusieurs bandes
+    // - presque toutes en bas
+    // - peu d'étalement vertical
+    // - boîtes fines
+    // - très larges / hauteur
+    const looksLikeCrosswalk =
+      raw.length >= 3 &&
+      fracLow > 0.8 &&        // > 80% en bas
+      verticalSpan < 0.15 &&  // très peu de différence en hauteur
+      avgH < 0.15 &&          // boîtes plutôt fines
+      avgRatio > 4.0;         // très larges par rapport à la hauteur
+
+    if (looksLikeCrosswalk) {
+      // On ignore tout : probablement un passage piéton / marquage au sol linéaire
+      return [];
+    }
+
+    // 4) Sinon, on enlève seulement les grosses bandes horizontales isolées en bas
+    return raw.filter(p => {
+      const wNorm = p.width / imgW;
+      const hNorm = p.height / imgH;
+      const yNorm = p.y / imgH;
+      const ratio = hNorm <= 1e-6 ? 999 : wNorm / hNorm;
+
+      const isBigBand = (wNorm > 0.45 && ratio > 5.0 && yNorm > 0.55);
+      return !isBigBand;
+    });
   }
 
   // === 5. Gestion de la caméra ===
@@ -202,11 +245,9 @@
 
   function stopCamera() {
     if (stream) {
-      // on coupe physiquement la caméra
       stream.getTracks().forEach(t => t.stop());
       stream = null;
     }
-    // on détache le flux vidéo
     video.srcObject = null;
   }
 
@@ -234,7 +275,23 @@
 
       const imgW = tmpCanvas.width;
       const imgH = tmpCanvas.height;
-      const filtered = filterStairs(preds, imgW, imgH, MIN_CONF);
+
+      // --- FILTRE + ANTI-CLIGNOTEMENT ---
+      let filtered = filterStairs(preds, imgW, imgH, MIN_CONF);
+
+      if (filtered.length === 0) {
+        // aucune détection sur cette frame → on garde les anciennes quelques frames
+        if (persistenceCounter < persistenceFrames) {
+          filtered = previousDetections;
+          persistenceCounter++;
+        } else {
+          previousDetections = [];
+        }
+      } else {
+        // on a des détections → on les mémorise
+        previousDetections = filtered;
+        persistenceCounter = 0;
+      }
 
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       ctx.lineWidth = 2;
