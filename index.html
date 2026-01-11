@@ -92,7 +92,11 @@
   // === Paramètres Roboflow / projet ===
   const API_KEY = "Hl9oVZ2Lmd7lwCSsjCU5";
   const API_URL = "https://serverless.roboflow.com/gildas-lkqed/workflows/custom-workflow-2";
-  const FRAME_INTERVAL_MS = 300; // 1 frame toutes les 300 ms
+
+  // ✅ Perf mobile (ajustables)
+  const FRAME_INTERVAL_MS = 350; // ~3 FPS (plus rapide si tu diminues)
+  const TARGET_W = 640;          // downscale (accélère sur téléphone)
+  const JPEG_QUALITY = 0.7;      // 0.6–0.8 recommandé
   const MIN_CONF = 0.4;
 
   const video = document.getElementById("videoElement");
@@ -107,20 +111,26 @@
   let intervalId = null;
   let isBusy = false;
 
-  // --- Anti-clignotement : on garde les dernières détections quelques frames ---
+  // --- Anti-clignotement (amélioré) ---
   let previousDetections = [];
-  let persistenceFrames = 4;   // nombre de frames où on garde les anciennes détections
+  const persistenceFrames = 4;
   let persistenceCounter = 0;
 
-  // === 1. Appel API Roboflow (équivalent de call_workflow_with_frame) ===
+  function avgConf(preds) {
+    if (!preds || preds.length === 0) return 0;
+    return preds.reduce((a, p) => a + (p.confidence || 0), 0) / preds.length;
+  }
+
+  // ✅ Canvas réutilisé (ne pas recréer à chaque frame)
+  const tmpCanvas = document.createElement("canvas");
+  const tmpCtx = tmpCanvas.getContext("2d");
+
+  // === 1. Appel API Roboflow ===
   async function callWorkflowWithBase64(imageBase64) {
     const payload = {
       api_key: API_KEY,
       inputs: {
-        image: {
-          type: "base64",
-          value: imageBase64
-        }
+        image: { type: "base64", value: imageBase64 }
       }
     };
 
@@ -137,7 +147,7 @@
     return await resp.json();
   }
 
-  // === 2. find_predictions en version JS ===
+  // === 2. find_predictions ===
   function findPredictions(obj) {
     if (!obj) return null;
     if (Array.isArray(obj)) {
@@ -146,9 +156,7 @@
         if (res) return res;
       }
     } else if (typeof obj === "object") {
-      if (Array.isArray(obj.predictions)) {
-        return obj.predictions;
-      }
+      if (Array.isArray(obj.predictions)) return obj.predictions;
       for (const key in obj) {
         const res = findPredictions(obj[key]);
         if (res) return res;
@@ -157,7 +165,7 @@
     return null;
   }
 
-  // === 3. Catégorie de distance (loin / moyen / proche) ===
+  // === 3. Catégorie de distance ===
   function distanceCategory(boxHeight, imageHeight) {
     const ratio = boxHeight / imageHeight;
     if (ratio < 0.10) return "loin";
@@ -165,13 +173,12 @@
     else return "proche";
   }
 
-  // === 4. Filtre anti-passage piéton amélioré ===
+  // === 4. Filtre anti-faux positifs (crosswalk + bandes + bruit) ===
   function filterStairs(rawPreds, imgW, imgH, minConf = 0.4) {
-    // 1) On garde seulement les détections au-dessus du seuil
-    const raw = rawPreds.filter(p => (p.confidence || 0) >= minConf);
+    const raw = (rawPreds || []).filter(p => (p.confidence || 0) >= minConf);
     if (raw.length === 0) return [];
 
-    // 2) On calcule des stats globales
+    // Stats globales (motif passage piéton)
     const ys = raw.map(p => p.y / imgH);
     const hs = raw.map(p => p.height / imgH);
     const ws = raw.map(p => p.width / imgW);
@@ -181,52 +188,41 @@
     const verticalSpan = maxY - minY;
 
     const avgH = hs.reduce((a, b) => a + b, 0) / hs.length;
-    const avgW = ws.reduce((a, b) => a + b, 0) / ws.length;
 
-    // Largeur/hauteur moyenne (plus c'est grand, plus c'est une bande plate)
-    const ratios = [];
-    for (let i = 0; i < raw.length; i++) {
-      if (hs[i] > 1e-6) {
-        ratios.push(ws[i] / hs[i]);
-      }
-    }
-    const avgRatio = ratios.length
-      ? ratios.reduce((a, b) => a + b, 0) / ratios.length
-      : 0;
+    const ratios = raw.map((p, i) => (hs[i] > 1e-6 ? ws[i] / hs[i] : 999));
+    const avgRatio = ratios.reduce((a, b) => a + b, 0) / ratios.length;
 
     const fracLow = ys.filter(y => y > 0.6).length / ys.length;
 
-    // 3) Motif "passage piéton" global :
-    // - plusieurs bandes
-    // - presque toutes en bas
-    // - peu d'étalement vertical
-    // - boîtes fines
-    // - très larges / hauteur
     const looksLikeCrosswalk =
       raw.length >= 3 &&
-      fracLow > 0.8 &&        // > 80% en bas
-      verticalSpan < 0.15 &&  // très peu de différence en hauteur
-      avgH < 0.15 &&          // boîtes plutôt fines
-      avgRatio > 4.0;         // très larges par rapport à la hauteur
+      fracLow > 0.8 &&
+      verticalSpan < 0.15 &&
+      avgH < 0.15 &&
+      avgRatio > 4.0;
 
-    if (looksLikeCrosswalk) {
-      // On ignore tout : probablement un passage piéton / marquage au sol linéaire
-      return [];
-    }
+    if (looksLikeCrosswalk) return [];
 
-    // 4) Sinon, on enlève seulement les grosses bandes horizontales isolées en bas
+    // Filtrage individuel
     return raw.filter(p => {
       const wNorm = p.width / imgW;
       const hNorm = p.height / imgH;
       const yNorm = p.y / imgH;
-      const ratio = hNorm <= 1e-6 ? 999 : wNorm / hNorm;
 
+      // ✅ bruit: trop petit
+      const area = wNorm * hNorm;
+      if (area < 0.01) return false;
+
+      // ✅ grosse bande en bas
+      const ratio = hNorm <= 1e-6 ? 999 : wNorm / hNorm;
       const isBigBand = (wNorm > 0.45 && ratio > 5.0 && yNorm > 0.55);
-      return !isBigBand;
+      if (isBigBand) return false;
+
+      return true;
     });
   }
 
-  // === 5. Gestion de la caméra ===
+  // === 5. Caméra ===
   async function startCamera() {
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -251,23 +247,27 @@
     video.srcObject = null;
   }
 
-  // === 6. Boucle d'analyse (équivalent de ta boucle while + SKIP_FRAMES) ===
+  // === 6. Boucle d'analyse ===
   async function processFrameLoop() {
     if (!video.videoWidth || !video.videoHeight) return;
     if (isBusy) return;
     isBusy = true;
 
     try {
+      // Overlay à la taille vidéo
       overlay.width = video.videoWidth;
       overlay.height = video.videoHeight;
 
-      const tmpCanvas = document.createElement("canvas");
-      tmpCanvas.width = video.videoWidth;
-      tmpCanvas.height = video.videoHeight;
-      const tmpCtx = tmpCanvas.getContext("2d");
+      // ✅ Downscale pour l'API (accélère)
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const scale = Math.min(1, TARGET_W / vw);
+
+      tmpCanvas.width = Math.round(vw * scale);
+      tmpCanvas.height = Math.round(vh * scale);
       tmpCtx.drawImage(video, 0, 0, tmpCanvas.width, tmpCanvas.height);
 
-      const dataURL = tmpCanvas.toDataURL("image/jpeg", 0.8);
+      const dataURL = tmpCanvas.toDataURL("image/jpeg", JPEG_QUALITY);
       const base64Data = dataURL.split(",")[1];
 
       const json = await callWorkflowWithBase64(base64Data);
@@ -276,26 +276,30 @@
       const imgW = tmpCanvas.width;
       const imgH = tmpCanvas.height;
 
-      // --- FILTRE + ANTI-CLIGNOTEMENT ---
+      // Filtre + anti-clignotement intelligent
       let filtered = filterStairs(preds, imgW, imgH, MIN_CONF);
 
       if (filtered.length === 0) {
-        // aucune détection sur cette frame → on garde les anciennes quelques frames
-        if (persistenceCounter < persistenceFrames) {
+        // ✅ persister seulement si l'ancienne détection était fiable
+        if (persistenceCounter < persistenceFrames && avgConf(previousDetections) >= 0.6) {
           filtered = previousDetections;
           persistenceCounter++;
         } else {
           previousDetections = [];
         }
       } else {
-        // on a des détections → on les mémorise
         previousDetections = filtered;
         persistenceCounter = 0;
       }
 
+      // Dessin
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       ctx.lineWidth = 2;
       ctx.font = "14px Arial";
+
+      // ⚠️ rescale boxes (car on a downscale pour l'API)
+      const sx = overlay.width / imgW;
+      const sy = overlay.height / imgH;
 
       let countTotal = 0;
       let countLoin = 0;
@@ -304,18 +308,20 @@
 
       for (const p of filtered) {
         const conf = p.confidence || 0.0;
-        const x = p.x;
-        const y = p.y;
-        const w = p.width;
-        const h = p.height;
         const cls = p.class || "stair";
+
+        const x = p.x * sx;
+        const y = p.y * sy;
+        const w = p.width * sx;
+        const h = p.height * sy;
 
         const x1 = Math.round(x - w / 2);
         const y1 = Math.round(y - h / 2);
         const x2 = Math.round(x + w / 2);
         const y2 = Math.round(y + h / 2);
 
-        const cat = distanceCategory(h, imgH);
+        // distance basée sur taille dans l'image API (imgH)
+        const cat = distanceCategory(p.height, imgH);
 
         countTotal++;
         if (cat === "loin") countLoin++;
@@ -330,9 +336,9 @@
         ctx.fillText(label, x1 + 2, Math.max(y1 - 4, 12));
       }
 
-      const info = `Marches: ${countTotal} (loin:${countLoin} moy:${countMoyen} proche:${countProche})`;
-      infoDiv.textContent = info;
+      infoDiv.textContent = `Marches: ${countTotal} (loin:${countLoin} moy:${countMoyen} proche:${countProche})`;
       statusDiv.textContent = `Dernière mise à jour: ${new Date().toLocaleTimeString()}`;
+
     } catch (err) {
       console.error(err);
       statusDiv.textContent = "Erreur: " + err.message;
@@ -341,7 +347,7 @@
     }
   }
 
-  // === 7. Boutons Démarrer / Arrêter ===
+  // === 7. Boutons ===
   startBtn.addEventListener("click", () => {
     if (!stream) {
       startCamera().then(() => {
@@ -359,26 +365,24 @@
   });
 
   stopBtn.addEventListener("click", () => {
-    // on arrête la boucle d'analyse
     if (intervalId) {
       clearInterval(intervalId);
       intervalId = null;
     }
 
-    // on coupe la caméra
     stopCamera();
 
-    // on nettoie l'affichage
     ctx.clearRect(0, 0, overlay.width, overlay.height);
     infoDiv.textContent = "Caméra arrêtée.";
     statusDiv.textContent = "";
 
-    // on réactive le bouton Démarrer
     startBtn.disabled = false;
     stopBtn.disabled = true;
+
+    previousDetections = [];
+    persistenceCounter = 0;
   });
 
-  // on prépare la caméra au chargement de la page
   window.addEventListener("load", () => {
     startCamera();
   });
